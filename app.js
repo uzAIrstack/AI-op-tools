@@ -130,6 +130,208 @@
     return el ? (parseFloat(el.value) || 0) : 0;
   }
 
+  // --- Optional detail lines for revenue and expense categories ---
+  const SUBLINE_CATEGORIES = {
+    manualRevenue: 'Total Program Revenue',
+    tuitionRemission: 'Tuition Remission Expense',
+    salProgramManager: 'Program Manager',
+    salTeachingStipend: 'Teaching Stipend',
+    salGuestLecturer: 'Guest Lecturer',
+    salConsultant: 'Consultant / Professional Services',
+    salOther: 'Other Salaries',
+    fringeFTBase: 'Full-Time Fringe Base',
+    fringePTBase: 'Part-Time Fringe Base',
+    travelCosts: 'Travel Costs',
+    adminCosts: 'Administrative Costs',
+    suppliesCosts: 'General Supplies & Expenses',
+    advertisingCosts: 'Advertising & Publicity',
+    materialsCosts: 'Classroom Materials',
+    foodCosts: 'Food Service / Catering',
+    otherDirectCosts: 'Other Direct Costs',
+    equipmentRental: 'Equipment Rental',
+    spaceRental: 'Space Rental',
+    contractualExpenses: 'Contractual Expenses',
+    otherExcluded: 'Other Excluded Costs'
+  };
+
+  const sublineItems = {};
+  let sublineSequence = 0;
+
+  function getSublineItems(categoryId) {
+    return sublineItems[categoryId] || [];
+  }
+
+  function getMeaningfulSublineItems(categoryId) {
+    return getSublineItems(categoryId).filter(item => item.description.trim() || item.amount !== 0);
+  }
+
+  function syncSublineTotal(categoryId) {
+    const input = document.getElementById(categoryId);
+    const items = getSublineItems(categoryId);
+    if (!input) return;
+
+    if (items.length) {
+      const total = items.reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
+      input.value = total;
+      input.readOnly = true;
+      input.classList.add('is-rollup');
+      input.setAttribute('aria-label', SUBLINE_CATEGORIES[categoryId] + ' total, calculated from detail lines');
+      input.title = 'Calculated from the detail lines below';
+    } else {
+      input.readOnly = false;
+      input.classList.remove('is-rollup');
+      input.setAttribute('aria-label', SUBLINE_CATEGORIES[categoryId]);
+      input.removeAttribute('title');
+    }
+
+    const block = document.querySelector('[data-subline-category="' + categoryId + '"]');
+    const status = block ? block.querySelector('.rollup-status') : null;
+    if (status) {
+      status.textContent = items.length
+        ? formatCurrency(getVal(categoryId)) + ' total from ' + items.length + (items.length === 1 ? ' line' : ' lines')
+        : '';
+      status.hidden = items.length === 0;
+    }
+  }
+
+  function renderSublineEditor(categoryId) {
+    const block = document.querySelector('[data-subline-category="' + categoryId + '"]');
+    if (!block) return;
+
+    const list = block.querySelector('.subline-list');
+    const addButton = block.querySelector('.add-subline-btn');
+    const items = getSublineItems(categoryId);
+    list.replaceChildren();
+    list.hidden = items.length === 0;
+    addButton.textContent = items.length ? '+ Add another line' : '+ Add lines';
+    addButton.setAttribute('aria-expanded', items.length ? 'true' : 'false');
+
+    items.forEach((item, index) => {
+      const row = document.createElement('div');
+      row.className = 'subline-row';
+
+      const branch = document.createElement('span');
+      branch.className = 'subline-branch';
+      branch.setAttribute('aria-hidden', 'true');
+      branch.textContent = '↳';
+
+      const description = document.createElement('input');
+      description.type = 'text';
+      description.className = 'input subline-description';
+      description.placeholder = 'Line description';
+      description.value = item.description;
+      description.setAttribute('aria-label', SUBLINE_CATEGORIES[categoryId] + ' line ' + (index + 1) + ' description');
+      description.addEventListener('input', () => {
+        item.description = description.value;
+      });
+
+      const amountGroup = document.createElement('div');
+      amountGroup.className = 'input-prefix-group subline-amount-group';
+      const prefix = document.createElement('span');
+      prefix.className = 'input-prefix';
+      prefix.textContent = '$';
+      const amount = document.createElement('input');
+      amount.type = 'number';
+      amount.className = 'input subline-amount';
+      amount.min = '0';
+      amount.step = '0.01';
+      amount.placeholder = '0';
+      amount.value = item.amount || '';
+      amount.setAttribute('aria-label', SUBLINE_CATEGORIES[categoryId] + ' line ' + (index + 1) + ' amount');
+      amount.addEventListener('input', () => {
+        item.amount = parseFloat(amount.value) || 0;
+        syncSublineTotal(categoryId);
+        recalculate();
+      });
+      amountGroup.append(prefix, amount);
+
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'remove-subline-btn';
+      remove.textContent = 'Remove';
+      remove.setAttribute('aria-label', 'Remove ' + SUBLINE_CATEGORIES[categoryId] + ' line ' + (index + 1));
+      remove.addEventListener('click', () => {
+        sublineItems[categoryId] = items.filter(candidate => candidate.id !== item.id);
+        syncSublineTotal(categoryId);
+        renderSublineEditor(categoryId);
+        recalculate();
+      });
+
+      row.append(branch, description, amountGroup, remove);
+      list.appendChild(row);
+    });
+
+    syncSublineTotal(categoryId);
+  }
+
+  function addSubline(categoryId) {
+    const items = getSublineItems(categoryId);
+    const existingAmount = items.length === 0 ? getVal(categoryId) : 0;
+    const newItem = {
+      id: ++sublineSequence,
+      description: '',
+      amount: existingAmount
+    };
+    sublineItems[categoryId] = [...items, newItem];
+    renderSublineEditor(categoryId);
+    recalculate();
+
+    const block = document.querySelector('[data-subline-category="' + categoryId + '"]');
+    const descriptions = block ? block.querySelectorAll('.subline-description') : [];
+    const newestDescription = descriptions[descriptions.length - 1];
+    if (newestDescription) newestDescription.focus();
+  }
+
+  function initializeSublineEditors() {
+    Object.keys(SUBLINE_CATEGORIES).forEach(categoryId => {
+      const input = document.getElementById(categoryId);
+      if (!input) return;
+
+      let mainRow = input.closest('.expense-row');
+      if (!mainRow) {
+        mainRow = input.closest('.manual-revenue-input');
+        if (mainRow) mainRow.classList.add('manual-revenue-line');
+      }
+      if (!mainRow || mainRow.parentElement.matches('[data-subline-category]')) return;
+
+      const block = document.createElement('div');
+      block.className = 'line-category-block';
+      block.dataset.sublineCategory = categoryId;
+      mainRow.parentNode.insertBefore(block, mainRow);
+      block.appendChild(mainRow);
+
+      const label = mainRow.querySelector(':scope > label');
+      if (label) {
+        const labelGroup = document.createElement('div');
+        labelGroup.className = 'line-category-label';
+        label.parentNode.insertBefore(labelGroup, label);
+        labelGroup.appendChild(label);
+
+        const addButton = document.createElement('button');
+        addButton.type = 'button';
+        addButton.className = 'add-subline-btn';
+        addButton.textContent = '+ Add lines';
+        addButton.setAttribute('aria-expanded', 'false');
+        addButton.setAttribute('aria-controls', categoryId + 'SublineList');
+        addButton.addEventListener('click', () => addSubline(categoryId));
+        labelGroup.appendChild(addButton);
+      }
+
+      const status = document.createElement('span');
+      status.className = 'rollup-status';
+      status.hidden = true;
+      mainRow.appendChild(status);
+
+      const list = document.createElement('div');
+      list.className = 'subline-list';
+      list.id = categoryId + 'SublineList';
+      list.hidden = true;
+      block.appendChild(list);
+
+      renderSublineEditor(categoryId);
+    });
+  }
+
   // --- Compute tuition per participant and total students ---
   function getEnrollmentInfo() {
     const revenueMode = getToggleValue('revenueToggle');
@@ -361,6 +563,8 @@
     return 0;
   }
 
+  initializeSublineEditors();
+
   // --- Event Listeners for all inputs ---
   document.querySelectorAll('input[type="number"], input[type="text"]').forEach(input => {
     input.addEventListener('input', recalculate);
@@ -415,7 +619,16 @@
       programName, fiscalYear, revenueType, isDonation, isOGPS, paymentMethod, idcInfo,
       enrollInfo, subtotalA, subtotalB, subtotalC, subtotalD,
       fringeFT, fringePT, excludedManual, paypalFee, canvasFee, canvasFeePerParticipant,
-      totalDirect, mdc, idcOnMDC, processingFee, totalIndirect, totalCosts, netIncome
+      totalDirect, mdc, idcOnMDC, processingFee, totalIndirect, totalCosts, netIncome,
+      sublines: Object.fromEntries(
+        Object.keys(SUBLINE_CATEGORIES).map(categoryId => [
+          categoryId,
+          getMeaningfulSublineItems(categoryId).map(item => ({
+            description: item.description.trim() || 'Detail line',
+            amount: parseFloat(item.amount) || 0
+          }))
+        ])
+      )
     };
   }
 
@@ -425,7 +638,8 @@
     const d = gatherExportData();
 
     const wsData = [
-      ['Instructional Revenue Center - Budget Estimate'],
+      ['Executive Education ROI'],
+      ['Instructional Revenue Center - Budget'],
       ['Program:', d.programName],
       ['Fiscal Year:', d.fiscalYear],
       ['Revenue Type:', d.isDonation ? 'Donation' : 'IRC'],
@@ -447,6 +661,13 @@
     wsData.push([]);
     wsData.push(['PROJECTED REVENUE']);
 
+    function pushLineWithSublines(label, categoryId) {
+      wsData.push([label, getVal(categoryId)]);
+      (d.sublines[categoryId] || []).forEach(item => {
+        wsData.push(['   ' + item.description, item.amount]);
+      });
+    }
+
     const revenueMode = getToggleValue('revenueToggle');
     if (revenueMode === 'calculate') {
       wsData.push(['Semester', 'Students', 'Courses', 'Credits/Course', 'Tuition Rate', 'Subtotal']);
@@ -458,48 +679,52 @@
         const rate = getVal(sem + 'Rate');
         wsData.push([cap, stu, crs, cred, rate, stu * crs * cred * rate]);
       });
+      wsData.push(['Total Revenue', '', '', '', '', d.enrollInfo.totalRevenue]);
+    } else {
+      pushLineWithSublines('Total Revenue', 'manualRevenue');
     }
 
-    wsData.push(['Total Revenue', '', '', '', '', d.enrollInfo.totalRevenue]);
     wsData.push([]);
     wsData.push(['PROJECTED EXPENSES']);
     wsData.push([]);
 
     wsData.push(['I. Tuition Remission']);
-    wsData.push(['Tuition Remission Expense', getVal('tuitionRemission')]);
+    pushLineWithSublines('Tuition Remission Expense', 'tuitionRemission');
     wsData.push([]);
 
     wsData.push(['II. Salaries']);
-    wsData.push(['Program Manager', getVal('salProgramManager')]);
-    wsData.push(['Teaching Stipend', getVal('salTeachingStipend')]);
-    wsData.push(['Guest Lecturer', getVal('salGuestLecturer')]);
-    wsData.push(['Consultant/Professional Services', getVal('salConsultant')]);
-    wsData.push(['Other Salaries', getVal('salOther')]);
+    pushLineWithSublines('Program Manager', 'salProgramManager');
+    pushLineWithSublines('Teaching Stipend', 'salTeachingStipend');
+    pushLineWithSublines('Guest Lecturer', 'salGuestLecturer');
+    pushLineWithSublines('Consultant/Professional Services', 'salConsultant');
+    pushLineWithSublines('Other Salaries', 'salOther');
     wsData.push(['Subtotal A (Salaries)', d.subtotalA]);
     wsData.push([]);
 
     wsData.push(['III. Fringe Benefits']);
+    pushLineWithSublines('Full-Time Fringe Base', 'fringeFTBase');
     wsData.push(['Full-Time Fringe (' + getVal('fringeRateFT') + '% on $' + getVal('fringeFTBase').toLocaleString() + ')', d.fringeFT]);
+    pushLineWithSublines('Part-Time Fringe Base', 'fringePTBase');
     wsData.push(['Part-Time Fringe (' + getVal('fringeRatePT') + '% on $' + getVal('fringePTBase').toLocaleString() + ')', d.fringePT]);
     wsData.push(['Subtotal B (Fringe Benefits)', d.subtotalB]);
     wsData.push([]);
 
     wsData.push(['IV. Program Travel & Other Direct Costs']);
-    wsData.push(['Travel Costs', getVal('travelCosts')]);
-    wsData.push(['Administrative Costs', getVal('adminCosts')]);
-    wsData.push(['General Supplies & Expenses', getVal('suppliesCosts')]);
-    wsData.push(['Advertising & Publicity', getVal('advertisingCosts')]);
-    wsData.push(['Classroom Materials', getVal('materialsCosts')]);
-    wsData.push(['Food Service / Catering', getVal('foodCosts')]);
-    wsData.push(['Other Direct Costs', getVal('otherDirectCosts')]);
+    pushLineWithSublines('Travel Costs', 'travelCosts');
+    pushLineWithSublines('Administrative Costs', 'adminCosts');
+    pushLineWithSublines('General Supplies & Expenses', 'suppliesCosts');
+    pushLineWithSublines('Advertising & Publicity', 'advertisingCosts');
+    pushLineWithSublines('Classroom Materials', 'materialsCosts');
+    pushLineWithSublines('Food Service / Catering', 'foodCosts');
+    pushLineWithSublines('Other Direct Costs', 'otherDirectCosts');
     wsData.push(['Subtotal C (Travel & Other Direct)', d.subtotalC]);
     wsData.push([]);
 
     wsData.push(['Excluded Direct Costs (Not Subject to IDC)']);
-    wsData.push(['Equipment Rental', getVal('equipmentRental')]);
-    wsData.push(['Space Rental', getVal('spaceRental')]);
-    wsData.push(['Contractual Expenses', getVal('contractualExpenses')]);
-    wsData.push(['Other Excluded Costs', getVal('otherExcluded')]);
+    pushLineWithSublines('Equipment Rental', 'equipmentRental');
+    pushLineWithSublines('Space Rental', 'spaceRental');
+    pushLineWithSublines('Contractual Expenses', 'contractualExpenses');
+    pushLineWithSublines('Other Excluded Costs', 'otherExcluded');
 
     if (d.isOGPS) {
       wsData.push(['PayPal Processing Fee (' + (d.paymentMethod === 'credit-card' ? '4%' : '0%') + ')', d.paypalFee]);
@@ -520,7 +745,7 @@
       wsData.push(['Total Indirect Costs', d.totalIndirect]);
     } else {
       wsData.push(['VI. Indirect Costs']);
-      wsData.push(['Donation — No indirect costs apply', 0]);
+      wsData.push(['Donation - No indirect costs apply', 0]);
     }
     wsData.push([]);
 
@@ -569,7 +794,7 @@
     const ws = XLSX.utils.aoa_to_sheet(wsData);
     ws['!cols'] = [{ wch: 52 }, { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 16 }];
 
-    XLSX.utils.book_append_sheet(wb, ws, 'Budget Estimate');
+    XLSX.utils.book_append_sheet(wb, ws, 'Budget');
     XLSX.writeFile(wb, (d.programName || 'IRC_Budget') + '_' + d.fiscalYear + '.xlsx');
   });
 
@@ -587,22 +812,23 @@
     function addTitle(text) {
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(16);
-      doc.setTextColor(27, 77, 110);
+      doc.setTextColor(122, 34, 135);
       doc.text(text, leftMargin, y);
       y += 8;
     }
 
     function addSubtitle(text) {
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(10);
-      doc.setTextColor(100, 100, 100);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(11);
+      doc.setTextColor(24, 36, 73);
       doc.text(text, leftMargin, y);
-      y += 5;
+      y += 6;
     }
 
     function addSectionHeader(text) {
+      if (y > 250) { doc.addPage(); y = 15; }
       y += 3;
-      doc.setFillColor(27, 77, 110);
+      doc.setFillColor(122, 34, 135);
       doc.rect(leftMargin, y - 4, rightMargin - leftMargin, 7, 'F');
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(9);
@@ -611,18 +837,18 @@
       y += 7;
     }
 
-    function addRow(label, value, bold) {
+    function addRow(label, value, bold, indentLevel = 0) {
       if (y > 255) { doc.addPage(); y = 15; }
       doc.setFont('helvetica', bold ? 'bold' : 'normal');
       doc.setFontSize(9);
-      doc.setTextColor(30, 30, 30);
-      doc.text(label, leftMargin + 3, y);
+      doc.setTextColor(24, 36, 73);
+      doc.text(label, leftMargin + 3 + (indentLevel * 5), y);
       doc.text(String(value), valueCol, y, { align: 'right' });
       y += 5;
     }
 
     function addTotalRow(label, value) {
-      doc.setDrawColor(200, 200, 200);
+      doc.setDrawColor(224, 229, 245);
       doc.line(leftMargin, y - 2, rightMargin, y - 2);
       addRow(label, value, true);
       y += 1;
@@ -630,18 +856,27 @@
 
     function addDivider() {
       y += 2;
-      doc.setDrawColor(220, 220, 220);
+      doc.setDrawColor(224, 229, 245);
       doc.line(leftMargin, y, rightMargin, y);
       y += 4;
     }
 
+    function addLineWithSublines(label, categoryId, indentLevel = 1) {
+      const details = d.sublines[categoryId] || [];
+      if (getVal(categoryId) <= 0 && details.length === 0) return;
+      addRow(label, formatCurrency(getVal(categoryId)), false, indentLevel);
+      details.forEach(item => {
+        addRow(item.description, formatCurrency(item.amount), false, indentLevel + 1);
+      });
+    }
+
     // Header
-    addTitle('Executive Education ROI Calculator');
-    addSubtitle('Instructional Revenue Center - Budget Estimate');
+    addTitle('Executive Education ROI');
+    addSubtitle('Instructional Revenue Center - Budget');
     y += 2;
 
     // Program Info
-    addRow('Program:', d.programName, false);
+    addRow('Program:', d.programName, true);
     addRow('Fiscal Year:', d.fiscalYear, false);
     addRow('Revenue Type:', d.isDonation ? 'Donation' : 'IRC', false);
     addRow('Academic Offering:', getToggleValue('creditToggle') === 'credit' ? 'Credit' : 'Non-Credit', false);
@@ -671,53 +906,63 @@
           addRow(cap + ' (' + stu + ' students x ' + crs + ' courses x ' + cred + ' cr x $' + rate.toLocaleString() + ')', formatCurrency(sub), false);
         }
       });
+      addTotalRow('Total Revenue', formatCurrency(d.enrollInfo.totalRevenue));
+    } else {
+      addTotalRow('Total Revenue', formatCurrency(d.enrollInfo.totalRevenue));
+      (d.sublines.manualRevenue || []).forEach(item => {
+        addRow(item.description, formatCurrency(item.amount), false, 1);
+      });
     }
-    addTotalRow('Total Revenue', formatCurrency(d.enrollInfo.totalRevenue));
 
     // Expenses
     addSectionHeader('PROJECTED EXPENSES');
 
-    addRow('I. Tuition Remission', formatCurrency(getVal('tuitionRemission')), false);
+    addRow('I. Tuition Remission', formatCurrency(getVal('tuitionRemission')), true);
+    (d.sublines.tuitionRemission || []).forEach(item => {
+      addRow(item.description, formatCurrency(item.amount), false, 1);
+    });
     addDivider();
 
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(9);
-    doc.setTextColor(30, 30, 30);
+    doc.setTextColor(24, 36, 73);
     doc.text('II. Salaries', leftMargin + 3, y); y += 5;
-    if (getVal('salProgramManager') > 0) addRow('   Program Manager', formatCurrency(getVal('salProgramManager')), false);
-    if (getVal('salTeachingStipend') > 0) addRow('   Teaching Stipend', formatCurrency(getVal('salTeachingStipend')), false);
-    if (getVal('salGuestLecturer') > 0) addRow('   Guest Lecturer', formatCurrency(getVal('salGuestLecturer')), false);
-    if (getVal('salConsultant') > 0) addRow('   Consultant/Professional Services', formatCurrency(getVal('salConsultant')), false);
-    if (getVal('salOther') > 0) addRow('   Other Salaries', formatCurrency(getVal('salOther')), false);
+    addLineWithSublines('Program Manager', 'salProgramManager');
+    addLineWithSublines('Teaching Stipend', 'salTeachingStipend');
+    addLineWithSublines('Guest Lecturer', 'salGuestLecturer');
+    addLineWithSublines('Consultant/Professional Services', 'salConsultant');
+    addLineWithSublines('Other Salaries', 'salOther');
     addTotalRow('Subtotal A (Salaries)', formatCurrency(d.subtotalA));
 
     doc.setFont('helvetica', 'bold');
     doc.text('III. Fringe Benefits', leftMargin + 3, y); y += 5;
-    if (d.fringeFT > 0) addRow('   Full-Time Fringe (' + getVal('fringeRateFT') + '%)', formatCurrency(d.fringeFT), false);
-    if (d.fringePT > 0) addRow('   Part-Time Fringe (' + getVal('fringeRatePT') + '%)', formatCurrency(d.fringePT), false);
+    addLineWithSublines('Full-Time Fringe Base', 'fringeFTBase');
+    if (d.fringeFT > 0) addRow('Full-Time Fringe (' + getVal('fringeRateFT') + '%)', formatCurrency(d.fringeFT), false, 1);
+    addLineWithSublines('Part-Time Fringe Base', 'fringePTBase');
+    if (d.fringePT > 0) addRow('Part-Time Fringe (' + getVal('fringeRatePT') + '%)', formatCurrency(d.fringePT), false, 1);
     addTotalRow('Subtotal B (Fringe Benefits)', formatCurrency(d.subtotalB));
 
     doc.setFont('helvetica', 'bold');
     doc.text('IV. Program Travel & Other Direct Costs', leftMargin + 3, y); y += 5;
-    if (getVal('travelCosts') > 0) addRow('   Travel Costs', formatCurrency(getVal('travelCosts')), false);
-    if (getVal('adminCosts') > 0) addRow('   Administrative Costs', formatCurrency(getVal('adminCosts')), false);
-    if (getVal('suppliesCosts') > 0) addRow('   General Supplies', formatCurrency(getVal('suppliesCosts')), false);
-    if (getVal('advertisingCosts') > 0) addRow('   Advertising & Publicity', formatCurrency(getVal('advertisingCosts')), false);
-    if (getVal('materialsCosts') > 0) addRow('   Classroom Materials', formatCurrency(getVal('materialsCosts')), false);
-    if (getVal('foodCosts') > 0) addRow('   Food Service', formatCurrency(getVal('foodCosts')), false);
-    if (getVal('otherDirectCosts') > 0) addRow('   Other Direct Costs', formatCurrency(getVal('otherDirectCosts')), false);
+    addLineWithSublines('Travel Costs', 'travelCosts');
+    addLineWithSublines('Administrative Costs', 'adminCosts');
+    addLineWithSublines('General Supplies', 'suppliesCosts');
+    addLineWithSublines('Advertising & Publicity', 'advertisingCosts');
+    addLineWithSublines('Classroom Materials', 'materialsCosts');
+    addLineWithSublines('Food Service', 'foodCosts');
+    addLineWithSublines('Other Direct Costs', 'otherDirectCosts');
     addTotalRow('Subtotal C (Travel & Other Direct)', formatCurrency(d.subtotalC));
 
     // Excluded + OGPS fees
     doc.setFont('helvetica', 'bold');
     doc.text('Excluded Direct Costs', leftMargin + 3, y); y += 5;
-    if (getVal('equipmentRental') > 0) addRow('   Equipment Rental', formatCurrency(getVal('equipmentRental')), false);
-    if (getVal('spaceRental') > 0) addRow('   Space Rental', formatCurrency(getVal('spaceRental')), false);
-    if (getVal('contractualExpenses') > 0) addRow('   Contractual Expenses', formatCurrency(getVal('contractualExpenses')), false);
-    if (getVal('otherExcluded') > 0) addRow('   Other Excluded', formatCurrency(getVal('otherExcluded')), false);
+    addLineWithSublines('Equipment Rental', 'equipmentRental');
+    addLineWithSublines('Space Rental', 'spaceRental');
+    addLineWithSublines('Contractual Expenses', 'contractualExpenses');
+    addLineWithSublines('Other Excluded', 'otherExcluded');
     if (d.isOGPS) {
-      addRow('   PayPal Fee (' + (d.paymentMethod === 'credit-card' ? '4%' : '0%') + ')', formatCurrency(d.paypalFee), false);
-      addRow('   Canvas LMS Fee ($' + d.canvasFeePerParticipant + '/participant)', formatCurrency(d.canvasFee), false);
+      addRow('PayPal Fee (' + (d.paymentMethod === 'credit-card' ? '4%' : '0%') + ')', formatCurrency(d.paypalFee), false, 1);
+      addRow('Canvas LMS Fee ($' + d.canvasFeePerParticipant + '/participant)', formatCurrency(d.canvasFee), false, 1);
     }
     addTotalRow('Subtotal D (Excluded Direct)', formatCurrency(d.subtotalD));
 
@@ -767,7 +1012,7 @@
     if (y > 240) { doc.addPage(); y = 15; }
     doc.setFont('helvetica', 'italic');
     doc.setFontSize(7);
-    doc.setTextColor(130, 130, 130);
+    doc.setTextColor(24, 36, 73);
     const notes = [
       'Total Modified Direct Costs = Subtotal A + Subtotal B + Subtotal C.',
       'IDC Rates: 50% credit/on-campus; 40% credit/off-campus; 30% noncredit/on-campus; 25% noncredit/off-campus.',
